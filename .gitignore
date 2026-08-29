@@ -1,0 +1,6 @@
+build/
+*.beam
+erl_crash.dump
+.env
+.idea/
+.vscode/
