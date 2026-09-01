@@ -1,3 +1,5 @@
+import carolina_codes_gleam/counters
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/json
@@ -251,10 +253,17 @@ fn year_int_decoder() -> decode.Decoder(Int) {
   decode.success(year)
 }
 
+fn slug_year_decoder() -> decode.Decoder(#(String, Int)) {
+  use slug <- decode.field(0, decode.string)
+  use year <- decode.field(1, decode.int)
+  decode.success(#(slug, year))
+}
+
 fn run(
   db: pog.Connection,
   query: pog.Query(t),
 ) -> Result(List(t), String) {
+  let _ = counters.inc_sql()
   case pog.execute(query, db) {
     Ok(pog.Returned(_count, rows)) -> Ok(rows)
     Error(err) -> Error(string.inspect(err))
@@ -298,9 +307,27 @@ pub fn list_speakers(
         |> pog.returning(speaker_decoder())
         |> run(db, _),
       )
-      use payloads <- result.try(
-        list.try_map(speakers, fn(speaker) { year_speaker_json(db, speaker, y) }),
-      )
+      use talks <- result.try(load_talks_for_year(db, y))
+      let slugs = list.map(speakers, fn(s) { s.slug })
+      use year_rows <- result.try(load_years_for_slugs(db, slugs))
+      // list.group prepends; reverse so buckets keep SQL ORDER BY year DESC.
+      let talks_by =
+        list.group(talks, fn(t) { t.speaker_slug })
+        |> dict.map_values(fn(_, ts) { list.reverse(ts) })
+      let years_by =
+        list.group(year_rows, fn(pair) { pair.0 })
+        |> dict.map_values(fn(_, pairs) { list.reverse(pairs) })
+      let payloads =
+        list.map(speakers, fn(speaker) {
+          let talks =
+            dict.get(talks_by, speaker.slug)
+            |> result.unwrap([])
+          let years =
+            dict.get(years_by, speaker.slug)
+            |> result.unwrap([])
+            |> list.map(fn(pair) { pair.1 })
+          speaker_object(speaker, year_speaker_fields(y, talks, years))
+        })
       Ok(json.object([#("data", json.preprocessed_array(payloads))]))
     }
   }
@@ -476,6 +503,36 @@ fn load_speaker(
   }
 }
 
+fn load_talks_for_year(
+  db: pog.Connection,
+  year: Int,
+) -> Result(List(Talk), String) {
+  pog.query(
+    "SELECT "
+    <> talk_cols
+    <> " FROM v1_talks WHERE year = $1 ORDER BY speaker_slug, year DESC",
+  )
+  |> pog.parameter(pog.int(year))
+  |> pog.returning(talk_decoder())
+  |> run(db, _)
+}
+
+fn load_years_for_slugs(
+  db: pog.Connection,
+  slugs: List(String),
+) -> Result(List(#(String, Int)), String) {
+  case slugs {
+    [] -> Ok([])
+    _ ->
+      pog.query(
+        "SELECT DISTINCT speaker_slug, year FROM v1_talks WHERE speaker_slug = ANY($1) ORDER BY speaker_slug, year DESC",
+      )
+      |> pog.parameter(pog.array(pog.text, slugs))
+      |> pog.returning(slug_year_decoder())
+      |> run(db, _)
+  }
+}
+
 fn load_talks(
   db: pog.Connection,
   slug: String,
@@ -528,16 +585,6 @@ fn load_sponsorships(
   |> pog.parameter(pog.text(slug))
   |> pog.returning(sponsorship_decoder())
   |> run(db, _)
-}
-
-fn year_speaker_json(
-  db: pog.Connection,
-  speaker: Speaker,
-  year: Int,
-) -> Result(json.Json, String) {
-  use talks <- result.try(load_talks(db, speaker.slug, Some(year)))
-  use years <- result.try(talk_years(db, speaker.slug))
-  Ok(speaker_object(speaker, year_speaker_fields(year, talks, years)))
 }
 
 fn year_speaker_fields(

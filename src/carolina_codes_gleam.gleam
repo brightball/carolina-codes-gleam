@@ -1,4 +1,5 @@
 import carolina_codes_gleam/catalog
+import carolina_codes_gleam/counters
 import envoy
 import gleam/bytes_tree
 import gleam/erlang/process
@@ -31,6 +32,29 @@ const schema_version = 1
 
 const default_db = "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev"
 
+/// IPv6 any-address. Pair with `mist.with_ipv6` for dual-stack where supported.
+pub const listen_interface = "::"
+
+fn fly_postgres(url: String) -> Bool {
+  string.contains(url, "flycast")
+  || string.contains(url, ".internal")
+  || string.contains(url, ".fly.io")
+}
+
+pub fn start_db() -> pog.Connection {
+  let _ = counters.inc_connect()
+  let db_url = envoy.get("DATABASE_URL") |> result.unwrap(default_db)
+  let pool_name = process.new_name("pog")
+  let assert Ok(config) = pog.url_config(pool_name, db_url)
+  let config = pog.pool_size(config, 8)
+  let config = case fly_postgres(db_url) {
+    True -> pog.ip_version(config, pog.Ipv6)
+    False -> config
+  }
+  let assert Ok(_) = pog.start(config)
+  pog.named_connection(pool_name)
+}
+
 pub fn main() -> Nil {
   logging.configure()
   let port =
@@ -38,21 +62,15 @@ pub fn main() -> Nil {
     |> result.try(int.parse)
     |> result.unwrap(4008)
 
-  let db_url = envoy.get("DATABASE_URL") |> result.unwrap(default_db)
-  let pool_name = process.new_name("pog")
-  let assert Ok(config) = pog.url_config(pool_name, db_url)
-  let config = pog.pool_size(config, 8)
-  let assert Ok(_) = pog.start(config)
-  let db = pog.named_connection(pool_name)
+  let db = start_db()
 
   process.spawn_unlinked(fn() { register(port) })
 
   let assert Ok(_) =
-    fn(req: Request(Connection)) -> Response(ResponseData) {
-      handle(db, req)
-    }
+    fn(req: Request(Connection)) -> Response(ResponseData) { handle(db, req) }
     |> mist.new
-    |> mist.bind("0.0.0.0")
+    |> mist.bind(listen_interface)
+    |> mist.with_ipv6
     |> mist.port(port)
     |> mist.start
 
@@ -60,9 +78,9 @@ pub fn main() -> Nil {
   process.sleep_forever()
 }
 
-fn handle(
+pub fn handle(
   db: pog.Connection,
-  req: Request(Connection),
+  req: Request(t),
 ) -> Response(ResponseData) {
   case req.method, request.path_segments(req) {
     http.Get, [] -> send_json(200, identity_json())
@@ -91,7 +109,7 @@ fn handle(
   }
 }
 
-fn query_year(req: Request(Connection)) -> option.Option(Int) {
+fn query_year(req: Request(t)) -> option.Option(Int) {
   request.get_query(req)
   |> result.unwrap([])
   |> list.key_find("year")
