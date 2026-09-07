@@ -1,0 +1,14 @@
+{
+  "name": "carolina-codes-gleam",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "install": "gleam deps download",
+  "ports": [
+    {
+      "name": "api",
+      "port": 4008
+    }
+  ]
+}
