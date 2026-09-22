@@ -10,6 +10,10 @@ if command -v mise >/dev/null 2>&1; then
 elif [ -x "${HOME}/.local/bin/mise" ]; then
   export PATH="${HOME}/.local/bin:${PATH}"
 fi
+# The workflow exports GITHUB_TOKEN for the Gitea clone. mise forwards that
+# value to GitHub and the job token is rejected, so tool installs fail.
+unset GITHUB_TOKEN
+unset GH_TOKEN || true
 mise trust --yes 2>/dev/null || mise trust || true
 mise install
 if [ -n "${GITHUB_PATH:-}" ]; then
