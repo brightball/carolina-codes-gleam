@@ -17,6 +17,26 @@ logging = ">= 1.5.0 and < 2.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+go_over = ">= 3.3.1 and < 4.0.0"
+cactus = ">= 1.4.0 and < 2.0.0"
 
 [erlang]
 extra_applications = ["inets", "ssl"]
+
+[go-over]
+cache = true
+global = false
+outdated = false
+format = "minimal"
+
+[cactus]
+always_init = false
+
+[cactus.pre-commit]
+actions = [
+  { command = "make", kind = "binary", args = ["test"] },
+  { command = "make", kind = "binary", args = ["sast"] },
+  { command = "make", kind = "binary", args = ["audit"] },
+  { command = "make", kind = "binary", args = ["secrets"] },
+  { command = "make", kind = "binary", args = ["format"] },
+]

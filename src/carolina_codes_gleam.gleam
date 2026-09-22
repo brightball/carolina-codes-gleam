@@ -2,7 +2,7 @@ import carolina_codes_gleam/catalog
 import carolina_codes_gleam/counters
 import envoy
 import gleam/bytes_tree
-import gleam/erlang/process
+import gleam/erlang/process.{type Name, type Pid}
 import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
@@ -32,27 +32,60 @@ const schema_version = 1
 
 const default_db = "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev"
 
+/// One shared CPU. Two sessions are enough for this read API and avoid eight
+/// Postgres handshakes competing with the listener during a cold boot.
+pub const db_pool_size = 2
+
 /// IPv6 any-address. Pair with `mist.with_ipv6` for dual-stack where supported.
 pub const listen_interface = "::"
 
-fn fly_postgres(url: String) -> Bool {
+/// A pool process and the connection name queries use.
+pub type StartedPool {
+  StartedPool(pid: Pid, db: pog.Connection)
+}
+
+/// Fly Postgres hostnames are IPv6-only on the private network.
+pub fn postgres_uses_ipv6(url: String) -> Bool {
   string.contains(url, "flycast")
   || string.contains(url, ".internal")
   || string.contains(url, ".fly.io")
 }
 
-pub fn start_db() -> pog.Connection {
-  let _ = counters.inc_connect()
-  let db_url = envoy.get("DATABASE_URL") |> result.unwrap(default_db)
-  let pool_name = process.new_name("pog")
-  let assert Ok(config) = pog.url_config(pool_name, db_url)
-  let config = pog.pool_size(config, 8)
-  let config = case fly_postgres(db_url) {
-    True -> pog.ip_version(config, pog.Ipv6)
-    False -> config
+/// Open one pool for `url`. Does not cache it. A bad URL or a pool that
+/// cannot start returns an error instead of crashing the caller.
+pub fn open_pool(url: String) -> Result(StartedPool, String) {
+  open_named(process.new_name("pog"), url)
+}
+
+/// Shared production pool. Successful starts are reused. Failures are not
+/// cached, so a later request can connect after Postgres becomes reachable.
+pub fn ensure_pool() -> Result(pog.Connection, String) {
+  case pool_get() {
+    Some(db) -> Ok(db)
+    None ->
+      case open_named(production_pool_name(), database_url()) {
+        Ok(pool) -> {
+          pool_put(pool.db)
+          Ok(pool.db)
+        }
+        Error(err) ->
+          case pool_get() {
+            Some(db) -> Ok(db)
+            None -> Error(err)
+          }
+      }
   }
-  let assert Ok(_) = pog.start(config)
-  pog.named_connection(pool_name)
+}
+
+/// Drop the cached production connection so the next `ensure_pool` starts again.
+pub fn reset_pool() -> Nil {
+  pool_clear()
+}
+
+/// Start a pool from `DATABASE_URL`, or the local default when that is unset.
+pub fn start_db() -> Result(pog.Connection, String) {
+  use pool <- result.try(open_pool(database_url()))
+  Ok(pool.db)
 }
 
 pub fn main() -> Nil {
@@ -62,51 +95,145 @@ pub fn main() -> Nil {
     |> result.try(int.parse)
     |> result.unwrap(4008)
 
-  let db = start_db()
-
-  process.spawn_unlinked(fn() { register(port) })
-
+  // Bind before any Postgres work. Fly's /health check must not wait on
+  // Flycast DNS or pool handshakes, and a down database must not kill the VM.
   let assert Ok(_) =
-    fn(req: Request(Connection)) -> Response(ResponseData) { handle(db, req) }
+    fn(req: Request(Connection)) { handle(ensure_pool, req) }
     |> mist.new
     |> mist.bind(listen_interface)
     |> mist.with_ipv6
     |> mist.port(port)
     |> mist.start
 
+  process.spawn_unlinked(fn() {
+    let _ = ensure_pool()
+  })
+  process.spawn_unlinked(fn() { register(port) })
+
   io.println("carolina-codes-gleam listening on :" <> int.to_string(port))
   process.sleep_forever()
 }
 
+/// `db` is called only for routes that query the catalog. `/`, `/health`,
+/// unknown paths, and a non-numeric year segment never call it.
 pub fn handle(
-  db: pog.Connection,
+  db: fn() -> Result(pog.Connection, String),
   req: Request(t),
 ) -> Response(ResponseData) {
   case req.method, request.path_segments(req) {
     http.Get, [] -> send_json(200, identity_json())
     http.Get, ["health"] ->
       send_json(200, json.object([#("ok", json.bool(True))]))
-    http.Get, ["v1", "years"] -> catalog_json(catalog.list_years(db))
+    http.Get, ["v1", "years"] -> with_db(db, catalog.list_years)
     http.Get, ["v1", "speakers"] ->
-      catalog_json(catalog.list_speakers(db, query_year(req)))
+      with_db(db, fn(conn) { catalog.list_speakers(conn, query_year(req)) })
     http.Get, ["v1", "speakers", year, slug] ->
       case int.parse(year) {
-        Ok(y) -> catalog_optional(catalog.speaker_by_year(db, y, slug))
+        Ok(y) ->
+          with_db_optional(db, fn(conn) {
+            catalog.speaker_by_year(conn, y, slug)
+          })
         Error(_) -> not_found()
       }
     http.Get, ["v1", "speakers", slug] ->
-      catalog_optional(catalog.speaker_by_slug(db, slug))
+      with_db_optional(db, fn(conn) { catalog.speaker_by_slug(conn, slug) })
     http.Get, ["v1", "sponsors"] ->
-      catalog_json(catalog.list_sponsors(db, query_year(req)))
+      with_db(db, fn(conn) { catalog.list_sponsors(conn, query_year(req)) })
     http.Get, ["v1", "sponsors", year, slug] ->
       case int.parse(year) {
-        Ok(y) -> catalog_optional(catalog.sponsor_by_year(db, y, slug))
+        Ok(y) ->
+          with_db_optional(db, fn(conn) {
+            catalog.sponsor_by_year(conn, y, slug)
+          })
         Error(_) -> not_found()
       }
     http.Get, ["v1", "sponsors", slug] ->
-      catalog_optional(catalog.sponsor_by_slug(db, slug))
+      with_db_optional(db, fn(conn) { catalog.sponsor_by_slug(conn, slug) })
     _, _ -> not_found()
   }
+}
+
+fn database_url() -> String {
+  envoy.get("DATABASE_URL") |> result.unwrap(default_db)
+}
+
+fn production_pool_name() -> Name(pog.Message) {
+  case name_get() {
+    Some(name) -> name
+    None -> {
+      let name = process.new_name("carolina_db")
+      name_put(name)
+      name
+    }
+  }
+}
+
+fn open_named(
+  name: Name(pog.Message),
+  url: String,
+) -> Result(StartedPool, String) {
+  case pog.url_config(name, url) {
+    Error(_) -> Error("database_unconfigured")
+    Ok(config) -> {
+      let _ = counters.inc_connect()
+      let config = pog.pool_size(config, db_pool_size)
+      let config = case postgres_uses_ipv6(url) {
+        True -> pog.ip_version(config, pog.Ipv6)
+        False -> config
+      }
+      case pog.start(config) {
+        Ok(started) -> {
+          // pog starts the pool linked to the caller. Callers include a
+          // one-shot warmup process and individual HTTP requests; either
+          // exiting would take the pool down. The listener keeps it alive.
+          process.unlink(started.pid)
+          Ok(StartedPool(pid: started.pid, db: started.data))
+        }
+        Error(_) -> Error("database_unavailable")
+      }
+    }
+  }
+}
+
+fn with_db(
+  db: fn() -> Result(pog.Connection, String),
+  query: fn(pog.Connection) -> Result(json.Json, String),
+) -> Response(ResponseData) {
+  case db() {
+    Ok(conn) ->
+      case protect(fn() { query(conn) }) {
+        Ran(result) -> catalog_json(result)
+        Crashed(reason) -> {
+          io.println("catalog query failed: " <> reason)
+          reset_pool()
+          server_error("database_unavailable")
+        }
+      }
+    Error(err) -> server_error(err)
+  }
+}
+
+fn with_db_optional(
+  db: fn() -> Result(pog.Connection, String),
+  query: fn(pog.Connection) -> Result(option.Option(json.Json), String),
+) -> Response(ResponseData) {
+  case db() {
+    Ok(conn) ->
+      case protect(fn() { query(conn) }) {
+        Ran(result) -> catalog_optional(result)
+        Crashed(reason) -> {
+          io.println("catalog query failed: " <> reason)
+          reset_pool()
+          server_error("database_unavailable")
+        }
+      }
+    Error(err) -> server_error(err)
+  }
+}
+
+type Attempt(value) {
+  Ran(value)
+  Crashed(String)
 }
 
 fn query_year(req: Request(t)) -> option.Option(Int) {
@@ -120,7 +247,7 @@ fn query_year(req: Request(t)) -> option.Option(Int) {
 fn catalog_json(result: Result(json.Json, String)) -> Response(ResponseData) {
   case result {
     Ok(body) -> send_json(200, body)
-    Error(err) -> send_json(500, json.object([#("error", json.string(err))]))
+    Error(err) -> server_error(err)
   }
 }
 
@@ -130,8 +257,12 @@ fn catalog_optional(
   case result {
     Ok(Some(body)) -> send_json(200, body)
     Ok(None) -> not_found()
-    Error(err) -> send_json(500, json.object([#("error", json.string(err))]))
+    Error(err) -> server_error(err)
   }
+}
+
+fn server_error(err: String) -> Response(ResponseData) {
+  send_json(500, json.object([#("error", json.string(err))]))
 }
 
 fn not_found() -> Response(ResponseData) {
@@ -234,3 +365,21 @@ fn join_url(url: String, path: String) -> String {
     False -> url <> path
   }
 }
+
+@external(erlang, "carolina_codes_gleam_counters", "pool_get")
+fn pool_get() -> option.Option(pog.Connection)
+
+@external(erlang, "carolina_codes_gleam_counters", "pool_put")
+fn pool_put(conn: pog.Connection) -> Nil
+
+@external(erlang, "carolina_codes_gleam_counters", "pool_clear")
+fn pool_clear() -> Nil
+
+@external(erlang, "carolina_codes_gleam_counters", "name_get")
+fn name_get() -> option.Option(Name(pog.Message))
+
+@external(erlang, "carolina_codes_gleam_counters", "name_put")
+fn name_put(name: Name(pog.Message)) -> Nil
+
+@external(erlang, "carolina_codes_gleam_counters", "protect")
+fn protect(run: fn() -> value) -> Attempt(value)

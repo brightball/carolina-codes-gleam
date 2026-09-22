@@ -1,6 +1,5 @@
-/// Process-wide SQL/connect counters for tests. Production still goes through
-/// the same `run` / `start_db` wrappers.
-
+/// Process-wide SQL and connect counters. Catalog queries and pool startup
+/// bump the same counters the tests read.
 @external(erlang, "carolina_codes_gleam_counters", "reset")
 pub fn reset() -> Nil
 

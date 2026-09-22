@@ -1,0 +1,132 @@
+# One Gitea Actions job per check, after a shared prepare stage.
+# Not a single combined job. The five checks do not needs: one another.
+#
+# act_runner starts a new container per job, so jobs cannot share a live
+# filesystem. Prepare clones GITHUB_SHA with the job token over HTTPS
+# (Gitea git HTTP returns 401 without the token), installs the mise
+# toolchain, fetches Gleam/Hex packages, and uploads a workspace plus
+# toolchain tarball. Check jobs restore that artifact and run one make
+# target. Do not git init or set init.defaultBranch here.
+# actions/upload-artifact@v4 treats Gitea as GHES and aborts; use v3.
+name: precommit
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: precommit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          token="${GITHUB_TOKEN:-${GITEA_TOKEN:-}}"
+          if [ -z "$token" ]; then echo "missing job token for git fetch" >&2; exit 1; fi
+          host="${GITHUB_SERVER_URL#https://}"
+          host="${host#http://}"
+          git clone --depth 1 --no-checkout "https://x-access-token:${token}@${host}/${GITHUB_REPOSITORY}" .
+          git fetch --depth 1 origin "${GITHUB_SHA}"
+          git checkout --force FETCH_HEAD
+      - run: bash scripts/ci-setup.sh
+      - run: |
+          export PATH="${HOME}/.local/bin:${HOME}/.local/share/mise/shims:${PATH}"
+          gleam deps download
+      - run: bash scripts/ci-pack-env.sh
+      - uses: actions/upload-artifact@v3
+        with:
+          name: prep-env
+          path: prep-env.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: carolina_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/carolina_dev
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-env
+      - run: |
+          bundle="$(find . -name prep-env.tar.gz -print | head -1)"
+          test -n "$bundle"
+          tar -xzf "$bundle"
+          bash ./ci-restore-env.sh
+      - run: make test
+
+  sast:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-env
+      - run: |
+          bundle="$(find . -name prep-env.tar.gz -print | head -1)"
+          test -n "$bundle"
+          tar -xzf "$bundle"
+          bash ./ci-restore-env.sh
+      - run: make sast
+
+  deps-audit:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-env
+      - run: |
+          bundle="$(find . -name prep-env.tar.gz -print | head -1)"
+          test -n "$bundle"
+          tar -xzf "$bundle"
+          bash ./ci-restore-env.sh
+      - run: make audit
+
+  gitleaks:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-env
+      - run: |
+          bundle="$(find . -name prep-env.tar.gz -print | head -1)"
+          test -n "$bundle"
+          tar -xzf "$bundle"
+          bash ./ci-restore-env.sh
+      - run: make secrets
+
+  format:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-env
+      - run: |
+          bundle="$(find . -name prep-env.tar.gz -print | head -1)"
+          test -n "$bundle"
+          tar -xzf "$bundle"
+          bash ./ci-restore-env.sh
+      - run: make format

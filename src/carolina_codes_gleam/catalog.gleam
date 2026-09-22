@@ -259,10 +259,7 @@ fn slug_year_decoder() -> decode.Decoder(#(String, Int)) {
   decode.success(#(slug, year))
 }
 
-fn run(
-  db: pog.Connection,
-  query: pog.Query(t),
-) -> Result(List(t), String) {
+fn run(db: pog.Connection, query: pog.Query(t)) -> Result(List(t), String) {
   let _ = counters.inc_sql()
   case pog.execute(query, db) {
     Ok(pog.Returned(_count, rows)) -> Ok(rows)
@@ -272,7 +269,9 @@ fn run(
 
 pub fn list_years(db: pog.Connection) -> Result(json.Json, String) {
   use rows <- result.try(
-    pog.query("SELECT year, slug, name, status FROM v1_years ORDER BY year DESC")
+    pog.query(
+      "SELECT year, slug, name, status FROM v1_years ORDER BY year DESC",
+    )
     |> pog.returning(year_decoder())
     |> run(db, _),
   )
@@ -344,15 +343,17 @@ pub fn speaker_by_slug(
       use talks <- result.try(load_talks(db, slug, None))
       use years <- result.try(talk_years(db, slug))
       Ok(
-        Some(json.object([
-          #(
-            "data",
-            speaker_object(row, [
-              #("talks", json.array(talks, talk_to_json)),
-              #("years", json.array(years, json.int)),
-            ]),
-          ),
-        ])),
+        Some(
+          json.object([
+            #(
+              "data",
+              speaker_object(row, [
+                #("talks", json.array(talks, talk_to_json)),
+                #("years", json.array(years, json.int)),
+              ]),
+            ),
+          ]),
+        ),
       )
     }
   }
@@ -373,12 +374,14 @@ pub fn speaker_by_year(
         _ -> {
           use years <- result.try(talk_years(db, slug))
           Ok(
-            Some(json.object([
-              #(
-                "data",
-                speaker_object(row, year_speaker_fields(year, talks, years)),
-              ),
-            ])),
+            Some(
+              json.object([
+                #(
+                  "data",
+                  speaker_object(row, year_speaker_fields(year, talks, years)),
+                ),
+              ]),
+            ),
           )
         }
       }
@@ -422,9 +425,7 @@ pub fn sponsor_by_slug(
   slug: String,
 ) -> Result(Option(json.Json), String) {
   use rows <- result.try(
-    pog.query(
-      "SELECT " <> sponsor_cols <> " FROM v1_sponsors WHERE slug = $1",
-    )
+    pog.query("SELECT " <> sponsor_cols <> " FROM v1_sponsors WHERE slug = $1")
     |> pog.parameter(pog.text(slug))
     |> pog.returning(sponsor_decoder())
     |> run(db, _),
@@ -434,14 +435,16 @@ pub fn sponsor_by_slug(
     [row, ..] -> {
       use sponsorships <- result.try(load_sponsorships(db, slug))
       Ok(
-        Some(json.object([
-          #(
-            "data",
-            sponsor_object(row, [
-              #("sponsorships", json.array(sponsorships, sponsorship_to_json)),
-            ]),
-          ),
-        ])),
+        Some(
+          json.object([
+            #(
+              "data",
+              sponsor_object(row, [
+                #("sponsorships", json.array(sponsorships, sponsorship_to_json)),
+              ]),
+            ),
+          ]),
+        ),
       )
     }
   }
@@ -468,18 +471,17 @@ pub fn sponsor_by_year(
     [row, ..] -> {
       use years <- result.try(sponsor_years(db, slug))
       Ok(
-        Some(json.object([
-          #(
-            "data",
-            year_sponsor_object(row, [
-              #("years", json.array(years, json.int)),
-              #(
-                "other_years",
-                json.array(except_year(years, year), json.int),
-              ),
-            ]),
-          ),
-        ])),
+        Some(
+          json.object([
+            #(
+              "data",
+              year_sponsor_object(row, [
+                #("years", json.array(years, json.int)),
+                #("other_years", json.array(except_year(years, year), json.int)),
+              ]),
+            ),
+          ]),
+        ),
       )
     }
   }
@@ -490,9 +492,7 @@ fn load_speaker(
   slug: String,
 ) -> Result(Option(Speaker), String) {
   use rows <- result.try(
-    pog.query(
-      "SELECT " <> speaker_cols <> " FROM v1_speakers WHERE slug = $1",
-    )
+    pog.query("SELECT " <> speaker_cols <> " FROM v1_speakers WHERE slug = $1")
     |> pog.parameter(pog.text(slug))
     |> pog.returning(speaker_decoder())
     |> run(db, _),
@@ -538,10 +538,7 @@ fn load_talks(
   slug: String,
   year: Option(Int),
 ) -> Result(List(Talk), String) {
-  let base =
-    "SELECT "
-    <> talk_cols
-    <> " FROM v1_talks WHERE speaker_slug = $1"
+  let base = "SELECT " <> talk_cols <> " FROM v1_talks WHERE speaker_slug = $1"
   case year {
     None ->
       pog.query(base <> " ORDER BY year DESC")
@@ -566,7 +563,10 @@ fn talk_years(db: pog.Connection, slug: String) -> Result(List(Int), String) {
   |> run(db, _)
 }
 
-fn sponsor_years(db: pog.Connection, slug: String) -> Result(List(Int), String) {
+fn sponsor_years(
+  db: pog.Connection,
+  slug: String,
+) -> Result(List(Int), String) {
   pog.query(
     "SELECT DISTINCT year FROM v1_sponsorships WHERE sponsor_slug = $1 ORDER BY year DESC",
   )
@@ -595,14 +595,20 @@ fn year_speaker_fields(
   [
     #("year", json.int(year)),
     #("talks", json.array(talks, talk_to_json)),
-    #("languages", json.array(uniq_tags(talks, fn(t) { t.languages }), json.string)),
+    #(
+      "languages",
+      json.array(uniq_tags(talks, fn(t) { t.languages }), json.string),
+    ),
     #("topics", json.array(uniq_tags(talks, fn(t) { t.topics }), json.string)),
     #("years", json.array(years, json.int)),
     #("other_years", json.array(except_year(years, year), json.int)),
   ]
 }
 
-pub fn uniq_tags(talks: List(Talk), pick: fn(Talk) -> List(String)) -> List(String) {
+pub fn uniq_tags(
+  talks: List(Talk),
+  pick: fn(Talk) -> List(String),
+) -> List(String) {
   talks
   |> list.flat_map(pick)
   |> list.filter(fn(value) { value != "" })
@@ -649,27 +655,25 @@ fn speaker_object(
   speaker: Speaker,
   extra: List(#(String, json.Json)),
 ) -> json.Json {
-  json.object(
-    list.append(
-      [
-        #("slug", json.string(speaker.slug)),
-        #("first_name", json.string(speaker.first_name)),
-        #("last_name", json.string(speaker.last_name)),
-        #("name", json.string(speaker.name)),
-        #("tagline", json.nullable(speaker.tagline, json.string)),
-        #("bio", json.nullable(speaker.bio, json.string)),
-        #("company", json.nullable(speaker.company, json.string)),
-        #("location", json.nullable(speaker.location, json.string)),
-        #("photo_path", json.nullable(speaker.photo_path, json.string)),
-        #("twitter_url", json.nullable(speaker.twitter_url, json.string)),
-        #("linkedin_url", json.nullable(speaker.linkedin_url, json.string)),
-        #("website_url", json.nullable(speaker.website_url, json.string)),
-        #("github_url", json.nullable(speaker.github_url, json.string)),
-        #("featured", json.bool(speaker.featured)),
-      ],
-      extra,
-    ),
-  )
+  json.object(list.append(
+    [
+      #("slug", json.string(speaker.slug)),
+      #("first_name", json.string(speaker.first_name)),
+      #("last_name", json.string(speaker.last_name)),
+      #("name", json.string(speaker.name)),
+      #("tagline", json.nullable(speaker.tagline, json.string)),
+      #("bio", json.nullable(speaker.bio, json.string)),
+      #("company", json.nullable(speaker.company, json.string)),
+      #("location", json.nullable(speaker.location, json.string)),
+      #("photo_path", json.nullable(speaker.photo_path, json.string)),
+      #("twitter_url", json.nullable(speaker.twitter_url, json.string)),
+      #("linkedin_url", json.nullable(speaker.linkedin_url, json.string)),
+      #("website_url", json.nullable(speaker.website_url, json.string)),
+      #("github_url", json.nullable(speaker.github_url, json.string)),
+      #("featured", json.bool(speaker.featured)),
+    ],
+    extra,
+  ))
 }
 
 fn talk_to_json(talk: Talk) -> json.Json {
@@ -694,51 +698,50 @@ fn year_sponsor_object(
   row: YearSponsor,
   extra: List(#(String, json.Json)),
 ) -> json.Json {
-  json.object(
-    list.append(
-      [
-        #("slug", json.string(row.slug)),
-        #("name", json.string(row.name)),
-        #("website", json.nullable(row.website, json.string)),
-        #("logo_path", json.nullable(row.logo_path, json.string)),
-        #("description", json.nullable(row.description, json.string)),
-        #("blurb", json.nullable(row.blurb, json.string)),
-        #("tier", json.nullable(row.tier, json.string)),
-        #("featured", json.bool(row.featured)),
-        #("year", json.int(row.year)),
-        #("twitter_url", json.nullable(row.twitter_url, json.string)),
-        #("linkedin_url", json.nullable(row.linkedin_url, json.string)),
-        #("youtube_url", json.nullable(row.youtube_url, json.string)),
-        #("instagram_url", json.nullable(row.instagram_url, json.string)),
-        #("facebook_url", json.nullable(row.facebook_url, json.string)),
-      ],
-      extra,
-    ),
-  )
+  json.object(list.append(
+    [
+      #("slug", json.string(row.slug)),
+      #("name", json.string(row.name)),
+      #("website", json.nullable(row.website, json.string)),
+      #("logo_path", json.nullable(row.logo_path, json.string)),
+      #("description", json.nullable(row.description, json.string)),
+      #("blurb", json.nullable(row.blurb, json.string)),
+      #("tier", json.nullable(row.tier, json.string)),
+      #("featured", json.bool(row.featured)),
+      #("year", json.int(row.year)),
+      #("twitter_url", json.nullable(row.twitter_url, json.string)),
+      #("linkedin_url", json.nullable(row.linkedin_url, json.string)),
+      #("youtube_url", json.nullable(row.youtube_url, json.string)),
+      #("instagram_url", json.nullable(row.instagram_url, json.string)),
+      #("facebook_url", json.nullable(row.facebook_url, json.string)),
+    ],
+    extra,
+  ))
 }
 
 fn sponsor_to_json(row: Sponsor) -> json.Json {
   sponsor_object(row, [])
 }
 
-fn sponsor_object(row: Sponsor, extra: List(#(String, json.Json))) -> json.Json {
-  json.object(
-    list.append(
-      [
-        #("slug", json.string(row.slug)),
-        #("name", json.string(row.name)),
-        #("website", json.nullable(row.website, json.string)),
-        #("logo_path", json.nullable(row.logo_path, json.string)),
-        #("description", json.nullable(row.description, json.string)),
-        #("twitter_url", json.nullable(row.twitter_url, json.string)),
-        #("linkedin_url", json.nullable(row.linkedin_url, json.string)),
-        #("youtube_url", json.nullable(row.youtube_url, json.string)),
-        #("instagram_url", json.nullable(row.instagram_url, json.string)),
-        #("facebook_url", json.nullable(row.facebook_url, json.string)),
-      ],
-      extra,
-    ),
-  )
+fn sponsor_object(
+  row: Sponsor,
+  extra: List(#(String, json.Json)),
+) -> json.Json {
+  json.object(list.append(
+    [
+      #("slug", json.string(row.slug)),
+      #("name", json.string(row.name)),
+      #("website", json.nullable(row.website, json.string)),
+      #("logo_path", json.nullable(row.logo_path, json.string)),
+      #("description", json.nullable(row.description, json.string)),
+      #("twitter_url", json.nullable(row.twitter_url, json.string)),
+      #("linkedin_url", json.nullable(row.linkedin_url, json.string)),
+      #("youtube_url", json.nullable(row.youtube_url, json.string)),
+      #("instagram_url", json.nullable(row.instagram_url, json.string)),
+      #("facebook_url", json.nullable(row.facebook_url, json.string)),
+    ],
+    extra,
+  ))
 }
 
 fn sponsorship_to_json(row: Sponsorship) -> json.Json {
