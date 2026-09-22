@@ -144,6 +144,11 @@ pub fn gitea_workflow_has_one_parallel_job_per_check_test() {
   assert !string.contains(setup, "git clone")
   let assert Ok(#(before_install, _)) = string.split_once(setup, "mise install")
   assert string.contains(before_install, "unset GITHUB_TOKEN")
+  assert string.contains(before_install, "MISE_ERLANG_COMPILE=false")
+  assert string.contains(
+    before_install,
+    "MISE_ERLANG_PRECOMPILED_OS=ubuntu-24.04",
+  )
 
   assert token_clones(prepare)
   assert string.contains(prepare, "bash scripts/ci-setup.sh")

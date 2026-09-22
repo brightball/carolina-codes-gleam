@@ -14,6 +14,9 @@ fi
 # value to GitHub and the job token is rejected, so tool installs fail.
 unset GITHUB_TOKEN
 unset GH_TOKEN || true
+# OTP source builds need a compiler. Use Bob's Ubuntu precompiled build.
+export MISE_ERLANG_PRECOMPILED_OS=ubuntu-24.04
+export MISE_ERLANG_COMPILE=false
 mise trust --yes 2>/dev/null || mise trust || true
 mise install
 if [ -n "${GITHUB_PATH:-}" ]; then
