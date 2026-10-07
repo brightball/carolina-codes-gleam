@@ -123,6 +123,40 @@ pub fn mise_pins_gitleaks_and_named_check_tasks_test() {
   assert string.contains(src, "make format")
 }
 
+pub fn readme_and_agents_record_versions_and_contract_test() {
+  let readme = must_read("README.md")
+  let agents = must_read("AGENTS.md")
+  let decisions = must_read("DECISIONS.md")
+  let memory = must_read("MEMORY.md")
+
+  assert string.contains(readme, "Gleam 1.18.1")
+  assert string.contains(readme, "OTP 29")
+  assert string.contains(readme, "mist 6.0.3")
+  assert string.contains(readme, "pog 4.1.0")
+  assert string.contains(readme, "v1_*")
+  assert string.contains(string.lowercase(readme), "register once")
+  assert string.contains(readme, "DECISIONS.md")
+
+  assert string.contains(agents, "Gleam 1.18.1")
+  assert string.contains(agents, "OTP 29")
+  assert string.contains(agents, "mist 6.0.3")
+  assert string.contains(agents, "pog 4.1.0")
+  assert string.contains(agents, "v1_*")
+  assert string.contains(agents, "never Ash")
+  assert string.contains(string.lowercase(agents), "register once")
+  assert string.contains(agents, "DECISIONS.md")
+  assert string.contains(agents, "Postgres 16")
+
+  assert string.contains(decisions, "Status: accepted")
+  assert string.contains(decisions, "HTTP server is mist")
+  assert string.contains(decisions, "IPv6")
+  assert string.contains(decisions, "pog pool size is 2")
+  assert string.contains(decisions, "opentelemetry_api")
+  assert string.contains(decisions, "CI Postgres is 16")
+  assert string.contains(memory, "non-binding")
+  assert string.contains(memory, "DECISIONS.md")
+}
+
 pub fn gitea_workflow_has_one_parallel_job_per_check_test() {
   let src = must_read(".gitea/workflows/precommit.yml")
   let setup = must_read("scripts/ci-setup.sh")
